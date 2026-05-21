@@ -1,0 +1,24 @@
+# 编译产物
+/target/
+**/*.rs.bk
+
+# 锁文件（如果希望锁定依赖版本，可以去掉下一行的注释；一般二进制建议提交）
+# Cargo.lock
+
+# IDE 及编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 本地配置文件（包含用户具体路径，不应提交）
+quickopen.toml
+config.toml
+
+# 示例配置文件（保留，但一般不忽略，如果你不希望提交示例，可取消注释）
+config.example.toml
+
+# Windows 系统文件
+Thumbs.db
+desktop.ini
