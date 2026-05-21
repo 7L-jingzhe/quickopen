@@ -68,13 +68,18 @@ fn create_default_config(path: &Path) -> Result<()> {
 # 格式: 别名 = "目标路径或URL"
 # 支持环境变量: %APPDATA%, %USERPROFILE%, $HOME 等
 # 路径可以使用正斜杠 / 或双反斜杠 \\
+# 如果目标需要参数，可以直接写在路径后面（如 "D:/app.exe --arg1 val"）
+# 如果路径包含空格，请用双引号包裹路径部分，例如 "\"D:/Program Files/app.exe\" --arg"
 
 [aliases]
 # 示例：游戏启动器
 ys = "D:/Games/miHoYo/miHoYo Launcher/launcher.exe"
 
-# 示例：常用程序
-note = "notepad.exe"   # 系统 PATH 中的程序可以直接写名字
+# 示例：带参数的程序
+vm = "\"D:/Tool/VMware/vmware.exe\" --locale zh_CN"
+
+# 示例：常用程序（系统 PATH 中的程序可以直接写名字）
+note = "notepad.exe"
 
 # 示例：文件夹
 downloads = "D:/downloads"
@@ -102,7 +107,6 @@ fn is_url(s: &str) -> bool {
 
 /// 用资源管理器打开目录
 fn open_directory_with_explorer(path: &Path) -> Result<()> {
-    // 获取规范化的绝对路径，确保 explorer 能正确打开
     let abs_path = path
         .canonicalize()
         .with_context(|| format!("Failed to canonicalize path: {:?}", path))?;
@@ -142,6 +146,86 @@ fn open_url_with_start(url: &str) -> Result<()> {
         bail!("Failed to open URL with start");
     }
     Ok(())
+}
+
+/// 拆分目标字符串，返回 (可执行文件路径, 默认参数列表)
+/// 支持路径中包含空格（使用双引号包裹）
+/// 示例：
+/// - "D:/Tool/app.exe --arg1 val"  => ("D:/Tool/app.exe", ["--arg1", "val"])
+/// - "\"D:/Program Files/app.exe\" --arg1 val" => ("D:/Program Files/app.exe", ["--arg1", "val"])
+fn split_target(target: &str) -> (String, Vec<String>) {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return (String::new(), vec![]);
+    }
+
+    // 如果以双引号开头，找闭合的双引号
+    if trimmed.starts_with('"') {
+        let after_first_quote = &trimmed[1..];
+        if let Some(close_pos) = after_first_quote.find('"') {
+            let path = after_first_quote[..close_pos].to_string();
+            let rest = after_first_quote[close_pos + 1..].trim();
+            let args = if rest.is_empty() {
+                vec![]
+            } else {
+                rest.split_whitespace().map(|s| s.to_string()).collect()
+            };
+            return (path, args);
+        }
+    }
+
+    // 否则按第一个空格分割路径和参数
+    if let Some(space_pos) = trimmed.find(char::is_whitespace) {
+        let path = trimmed[..space_pos].to_string();
+        let rest = trimmed[space_pos..].trim();
+        let args = if rest.is_empty() {
+            vec![]
+        } else {
+            rest.split_whitespace().map(|s| s.to_string()).collect()
+        };
+        (path, args)
+    } else {
+        (trimmed.to_string(), vec![])
+    }
+}
+
+/// 执行打开操作（支持目标内嵌参数）
+fn execute_open(alias: &str, extra_args: &[String], config: &Config) -> Result<()> {
+    let target = match config.aliases.get(alias) {
+        Some(t) => t,
+        None => {
+            bail!("Alias '{}' not found in config", alias);
+        }
+    };
+    let expanded = expand_path(target);
+
+    // 处理 URL
+    if is_url(&expanded) {
+        return open_url_with_start(&expanded);
+    }
+
+    // 拆分目标路径和默认参数
+    let (exe_path_str, default_args) = split_target(&expanded);
+    if exe_path_str.is_empty() {
+        bail!("Invalid target for alias '{}'", alias);
+    }
+    let path = Path::new(&exe_path_str);
+
+    // 目录处理
+    if path.is_dir() {
+        return open_directory_with_explorer(path);
+    }
+
+    // 文件存在性检查
+    if !path.exists() {
+        bail!("Target does not exist: {}", exe_path_str);
+    }
+
+    // 合并默认参数和用户额外参数（默认参数在前，用户额外参数在后）
+    let mut all_args = default_args;
+    all_args.extend(extra_args.iter().cloned());
+
+    run_executable(path, &all_args)
 }
 
 /// 列出所有别名
@@ -189,33 +273,6 @@ fn remove_alias(config: &mut Config, alias: &str, config_path: &Path) -> Result<
     Ok(())
 }
 
-/// 执行打开操作（原有功能）
-fn execute_open(alias: &str, extra_args: &[String], config: &Config) -> Result<()> {
-    let target = match config.aliases.get(alias) {
-        Some(t) => t,
-        None => {
-            bail!("Alias '{}' not found in config", alias);
-        }
-    };
-    let expanded = expand_path(target);
-
-    if is_url(&expanded) {
-        return open_url_with_start(&expanded);
-    }
-
-    let path = Path::new(&expanded);
-
-    if path.is_dir() {
-        return open_directory_with_explorer(path);
-    }
-
-    if !path.exists() {
-        bail!("Target does not exist: {}", expanded);
-    }
-
-    run_executable(path, extra_args)
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -225,9 +282,7 @@ fn main() -> Result<()> {
         eprintln!("  quickopen add <alias> <target>      - Add or update an alias");
         eprintln!("  quickopen remove <alias>            - Remove an alias");
         eprintln!();
-        eprintln!(
-            "Config file search order: ./config.example.toml, ./config.toml, ~/.quickopen.toml"
-        );
+        eprintln!("Config file search order: ./quickopen.toml, ./config.toml, ~/.quickopen.toml");
         std::process::exit(1);
     }
 
