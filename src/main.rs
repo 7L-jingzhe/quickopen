@@ -102,10 +102,13 @@ fn is_url(s: &str) -> bool {
 
 /// 用资源管理器打开目录
 fn open_directory_with_explorer(path: &Path) -> Result<()> {
-    let path_str = path.to_str().context("Invalid directory path")?;
-    let cmd = format!(r#"explorer "{}""#, path_str);
-    Command::new("cmd")
-        .args(&["/C", &cmd])
+    // 获取规范化的绝对路径，确保 explorer 能正确打开
+    let abs_path = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize path: {:?}", path))?;
+    let path_str = abs_path.to_str().context("Invalid directory path")?;
+    Command::new("explorer")
+        .arg(path_str)
         .spawn()
         .context("Failed to open directory")?;
     Ok(())
